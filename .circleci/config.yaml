@@ -1,0 +1,67 @@
+version: 2.1
+
+orbs:
+  codecov: codecov/codecov@1.0.5
+
+executors:
+  gogo:
+    working_directory: /go/src/github.com/sters/createtable2markdown
+    docker:
+      - image: circleci/golang:1.12
+        environment:
+          GO111MODULE: "on"
+
+commands:
+  save_pkg_cache:
+    description: restore go mod cache
+    steps:
+      - save_cache:
+          key: v1-pkg-cache
+          paths:
+            - "/go/pkg"
+
+  restore_pkg_cache:
+    description: restore go mod cache
+    steps:
+      - restore_cache:
+          keys:
+            - v1-pkg-cache
+
+jobs:
+  build:
+    executor: gogo
+    steps:
+      - checkout
+      - restore_pkg_cache
+      - run:
+          name: Check compilation
+          command: |
+            make build
+      - save_pkg_cache
+
+  test:
+    executor: gogo
+    steps:
+      - checkout
+      - restore_pkg_cache
+      - run: mkdir -p ./build/
+      - run:
+          name: Run unit tests
+          command: |
+            PACKAGE_NAMES=$(go list ./... | circleci tests split --split-by=timings --timings-type=classname)
+            gotestsum --junitfile ./build/gotestsum-report.xml -- -coverprofile=./build/coverage.txt $PACKAGE_NAMES
+      - store_artifacts:
+          path: ./build
+          destination: raw-test-output
+      - store_test_results:
+          path: ./build
+      - codecov/upload:
+          file: ./build/coverage.txt
+          flags: "unittests"
+
+workflows:
+  version: 2
+  build-workflow:
+    jobs:
+      - build
+      - test
