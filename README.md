@@ -1,12 +1,12 @@
 # createtable2markdown
 
-Installation
+## Installation
 
 ```
-go get github.com/sters/createtable2markdown
+go get -u github.com/sters/createtable2markdown
 ```
 
-Usage
+## Usage
 
 ```
 cat foo.sql | createtable2markdown
@@ -34,3 +34,5 @@ foo Table's Indexes
 |---|---|---|
 |PRIMARY|primary key|id|
 ```
+
+If you want beautiful markdown table, see [sters/markdown-table-formatter](https://github.com/sters/markdown-table-formatter)
