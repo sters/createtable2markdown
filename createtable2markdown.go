@@ -3,28 +3,41 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/xwb1989/sqlparser"
 )
 
 type config struct {
-	input  *os.File
-	output *os.File
+	input     *os.File
+	output    *os.File
+	verbosity bool
+}
+
+var logger *log.Logger
+
+type nopWriter struct{}
+
+func (*nopWriter) Write(p []byte) (n int, err error) {
+	return len(p), nil
 }
 
 func parseArgs() (*config, error) {
 	config := &config{
-		input:  os.Stdin,
-		output: os.Stdout,
+		input:     os.Stdin,
+		output:    os.Stdout,
+		verbosity: false,
 	}
 
 	var (
-		input  = flag.String("i", "", "input file, default = stdin")
-		output = flag.String("o", "", "output file, default = stdout")
-		err    error
+		input     = flag.String("i", "", "input file, default = stdin")
+		output    = flag.String("o", "", "output file, default = stdout")
+		verbosity = flag.Bool("v", false, "verbosity, default = false. if true, say logs")
+		err       error
 	)
 	flag.Parse()
 
@@ -42,6 +55,10 @@ func parseArgs() (*config, error) {
 		}
 	}
 
+	if *verbosity != false {
+		config.verbosity = *verbosity
+	}
+
 	return config, nil
 }
 
@@ -51,107 +68,151 @@ func main() {
 		panic(err)
 	}
 
+	var writer io.Writer
+	if config.verbosity {
+		writer = os.Stderr
+	} else {
+		writer = &nopWriter{}
+	}
+	logger = log.New(writer, "", log.LstdFlags)
+
 	sql, err := ioutil.ReadAll(config.input)
 	if err != nil {
-		log.Fatalf("can not read")
+		logger.Fatalf("can not read")
 	}
 
-	stmt, err := sqlparser.Parse(string(sql))
+	buf := strings.Builder{}
+
+	for _, sqlstring := range strings.Split(string(sql), ";") {
+		tableName, tableSpec, ok := parseCreateTabe(sqlstring)
+		if !ok {
+			continue
+		}
+
+		columns := [][]string{}
+		for _, col := range tableSpec.Columns {
+			columns = append(columns, columnToMarkdown(col))
+		}
+
+		indexes := [][]string{}
+		for _, index := range tableSpec.Indexes {
+			indexes = append(indexes, indexToMarkdown(index))
+		}
+
+		buf.WriteString(buildOutput(tableName, columns, indexes))
+	}
+
+	fmt.Println(buf.String())
+}
+
+func parseCreateTabe(sql string) (string, *sqlparser.TableSpec, bool) {
+	stmt, err := sqlparser.Parse(sql)
 	if err != nil {
-		log.Fatalf("can not parse query: %+v", err)
+		logger.Printf("can not parse query: %+v\n", err)
+		return "", nil, false
 	}
 
 	ddl, ok := stmt.(*sqlparser.DDL)
 	if !ok {
-		panic("query is not DDL")
+		logger.Println("query is not DDL")
+		return "", nil, false
 	}
 
-	result := [][]string{}
-	for _, col := range ddl.TableSpec.Columns {
-		row := []string{
-			col.Name.String(),
-		}
-
-		length := ""
-		if col.Type.Length != nil {
-			length = "(" + string(col.Type.Length.Val) + ")"
-		}
-
-		signed := ""
-		if col.Type.Unsigned {
-			signed = " unsigned"
-		}
-
-		enum := ""
-		if len(col.Type.EnumValues) > 0 {
-			enum = "("
-			for _, e := range col.Type.EnumValues {
-				enum += e + ", "
-			}
-			enum = enum[:len(enum)-2] + ")"
-		}
-
-		chartype := ""
-		if col.Type.Charset != "" {
-			chartype += col.Type.Charset
-		}
-		if col.Type.Collate != "" {
-			chartype += col.Type.Collate
-		}
-
-		row = append(
-			row,
-			fmt.Sprintf("%s%s%s%s%s",
-				col.Type.Type,
-				enum,
-				length,
-				signed,
-				chartype,
-			),
-		)
-
-		if col.Type.NotNull {
-			row = append(row, "not null")
-		} else {
-			row = append(row, "")
-		}
-
-		if col.Type.Autoincrement {
-			row = append(row, "auto_increment")
-		} else {
-			row = append(row, "")
-		}
-
-		if col.Type.Default != nil {
-			row = append(row, string(col.Type.Default.Val))
-		} else {
-			row = append(row, "")
-		}
-
-		if col.Type.Comment != nil {
-			row = append(row, string(col.Type.Comment.Val))
-		} else {
-			row = append(row, "")
-		}
-
-		result = append(result, row)
+	if ddl.TableSpec == nil {
+		logger.Println("query is not CREATE TABLE")
+		return "", nil, false
 	}
 
-	indexResult := [][]string{}
-	for _, index := range ddl.TableSpec.Indexes {
-		row := []string{
-			index.Info.Name.String(),
-			index.Info.Type,
-		}
+	return ddl.NewName.Name.String(), ddl.TableSpec, true
+}
 
-		cols := ""
-		for _, c := range index.Columns {
-			cols += c.Column.String() + ", "
-		}
-		row = append(row, cols[:len(cols)-2])
-
-		indexResult = append(indexResult, row)
+func columnToMarkdown(col *sqlparser.ColumnDefinition) []string {
+	row := []string{
+		col.Name.String(),
 	}
+
+	length := ""
+	if col.Type.Length != nil {
+		length = "(" + string(col.Type.Length.Val) + ")"
+	}
+
+	signed := ""
+	if col.Type.Unsigned {
+		signed = " unsigned"
+	}
+
+	enum := ""
+	if len(col.Type.EnumValues) > 0 {
+		enum = "("
+		for _, e := range col.Type.EnumValues {
+			enum += e + ", "
+		}
+		enum = enum[:len(enum)-2] + ")"
+	}
+
+	chartype := ""
+	if col.Type.Charset != "" {
+		chartype += col.Type.Charset
+	}
+	if col.Type.Collate != "" {
+		chartype += col.Type.Collate
+	}
+
+	row = append(
+		row,
+		fmt.Sprintf("%s%s%s%s%s",
+			col.Type.Type,
+			enum,
+			length,
+			signed,
+			chartype,
+		),
+	)
+
+	if col.Type.NotNull {
+		row = append(row, "not null")
+	} else {
+		row = append(row, "")
+	}
+
+	if col.Type.Autoincrement {
+		row = append(row, "auto_increment")
+	} else {
+		row = append(row, "")
+	}
+
+	if col.Type.Default != nil {
+		row = append(row, string(col.Type.Default.Val))
+	} else {
+		row = append(row, "")
+	}
+
+	if col.Type.Comment != nil {
+		row = append(row, string(col.Type.Comment.Val))
+	} else {
+		row = append(row, "")
+	}
+
+	return row
+}
+
+func indexToMarkdown(index *sqlparser.IndexDefinition) []string {
+	row := []string{
+		index.Info.Name.String(),
+		index.Info.Type,
+	}
+
+	cols := ""
+	for _, c := range index.Columns {
+		cols += c.Column.String() + ", "
+	}
+	row = append(row, cols[:len(cols)-2])
+
+	return row
+}
+
+func buildOutput(tableName string, columns [][]string, indexes [][]string) string {
+	buf := strings.Builder{}
 
 	resultHeader := []string{
 		"name",
@@ -162,27 +223,27 @@ func main() {
 		"comment",
 	}
 
-	buf := ddl.NewName.Name.String() + " Table's Definition\n\n|"
+	buf.WriteString(tableName + " Table's Definition\n\n|")
 	for _, h := range resultHeader {
-		buf += h + "|"
+		buf.WriteString(h + "|")
 	}
-	buf += "\n"
+	buf.WriteString("\n")
 
-	buf += "|"
+	buf.WriteString("|")
 	for range resultHeader {
-		buf += "---|"
+		buf.WriteString("---|")
 	}
-	buf += "\n"
+	buf.WriteString("\n")
 
-	for _, row := range result {
-		buf += "|"
+	for _, row := range columns {
+		buf.WriteString("|")
 		for _, col := range row {
-			buf += col + "|"
+			buf.WriteString(col + "|")
 		}
-		buf += "\n"
+		buf.WriteString("\n")
 	}
 
-	buf += "\n" + ddl.NewName.Name.String() + " Table's Indexes\n"
+	buf.WriteString("\n" + tableName + " Table's Indexes\n")
 
 	indexResultHeader := []string{
 		"name",
@@ -190,25 +251,26 @@ func main() {
 		"columns",
 	}
 
-	buf += "\n|"
+	buf.WriteString("\n|")
 	for _, h := range indexResultHeader {
-		buf += h + "|"
+		buf.WriteString(h + "|")
 	}
-	buf += "\n"
+	buf.WriteString("\n")
 
-	buf += "|"
+	buf.WriteString("|")
 	for range indexResultHeader {
-		buf += "---|"
+		buf.WriteString("---|")
 	}
-	buf += "\n"
+	buf.WriteString("\n")
 
-	for _, row := range indexResult {
-		buf += "|"
+	for _, row := range indexes {
+		buf.WriteString("|")
 		for _, col := range row {
-			buf += col + "|"
+			buf.WriteString(col + "|")
 		}
-		buf += "\n"
+		buf.WriteString("\n")
 	}
+	buf.WriteString("\n")
 
-	fmt.Println(buf)
+	return buf.String()
 }
