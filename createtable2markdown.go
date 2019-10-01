@@ -84,7 +84,7 @@ func main() {
 	buf := strings.Builder{}
 
 	for _, sqlstring := range strings.Split(string(sql), ";") {
-		tableName, tableSpec, ok := parseCreateTabe(sqlstring)
+		tableName, tableSpec, ok := parseCreateTable(sqlstring)
 		if !ok {
 			continue
 		}
@@ -105,7 +105,7 @@ func main() {
 	fmt.Println(buf.String())
 }
 
-func parseCreateTabe(sql string) (string, *sqlparser.TableSpec, bool) {
+func parseCreateTable(sql string) (string, *sqlparser.TableSpec, bool) {
 	stmt, err := sqlparser.Parse(sql)
 	if err != nil {
 		logger.Printf("can not parse query: %+v\n", err)
